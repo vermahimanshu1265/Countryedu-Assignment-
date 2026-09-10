@@ -1,0 +1,1087 @@
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Set, Optional
+
+
+# ============================================================
+# DATA MODELS
+# ============================================================
+
+@dataclass
+class Candidate:
+    candidate_id: int
+    name: str
+    email: str
+    phone: str
+    cgpa: float
+    branch: str
+    graduation_year: int
+    skills: Set[str]
+    experience: int
+
+    status: str = "Application"
+    recruiter: Optional[str] = None
+
+    history: list = field(default_factory=list)
+
+
+@dataclass
+class Job:
+    job_id: int
+    title: str
+    min_cgpa: float
+    eligible_branches: Set[str]
+    graduation_year: int
+    required_skills: Set[str]
+    min_experience: int
+
+
+@dataclass
+class EligibilityRule:
+    rule_name: str
+    enabled: bool
+    value: object
+
+
+# ============================================================
+# RECRUITMENT SYSTEM
+# ============================================================
+
+class RecruitmentSystem:
+
+    WORKFLOW = [
+        "Application",
+        "Eligibility",
+        "Shortlist",
+        "Assessment",
+        "Interview",
+        "Selection",
+        "Offer"
+    ]
+
+    def __init__(self):
+
+        self.candidates = {}
+        self.jobs = {}
+        self.recruiters = {}
+
+        self.next_candidate_id = 1
+        self.next_job_id = 1
+
+        # Prevent duplicate applications
+        self.application_keys = set()
+
+    # ========================================================
+    # AUDIT LOG
+    # ========================================================
+
+    def add_history(self, candidate, old_status, new_status, reason):
+
+        candidate.history.append({
+            "timestamp":
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+
+            "from":
+                old_status,
+
+            "to":
+                new_status,
+
+            "reason":
+                reason
+        })
+
+    # ========================================================
+    # CHANGE STATUS
+    # ========================================================
+
+    def change_status(self, candidate, new_status, reason):
+
+        old_status = candidate.status
+
+        candidate.status = new_status
+
+        self.add_history(
+            candidate,
+            old_status,
+            new_status,
+            reason
+        )
+
+    # ========================================================
+    # CREATE JOB
+    # ========================================================
+
+    def create_job(
+        self,
+        title,
+        min_cgpa,
+        branches,
+        graduation_year,
+        required_skills,
+        min_experience
+    ):
+
+        job = Job(
+
+            job_id=self.next_job_id,
+
+            title=title,
+
+            min_cgpa=min_cgpa,
+
+            eligible_branches=set(branches),
+
+            graduation_year=graduation_year,
+
+            required_skills=set(required_skills),
+
+            min_experience=min_experience
+        )
+
+        self.jobs[job.job_id] = job
+
+        self.next_job_id += 1
+
+        return job
+
+    # ========================================================
+    # APPLY FOR JOB
+    # ========================================================
+
+    def apply(
+        self,
+        job_id,
+        name,
+        email,
+        phone,
+        cgpa,
+        branch,
+        graduation_year,
+        skills,
+        experience
+    ):
+
+        # ----------------------------------------------------
+        # CHECK JOB
+        # ----------------------------------------------------
+
+        if job_id not in self.jobs:
+
+            return {
+                "success": False,
+                "message": "Job does not exist."
+            }
+
+        job = self.jobs[job_id]
+
+        # ----------------------------------------------------
+        # DUPLICATE APPLICATION CHECK
+        # ----------------------------------------------------
+
+        duplicate_key = (
+            email.lower().strip(),
+            job_id
+        )
+
+        if duplicate_key in self.application_keys:
+
+            return {
+                "success": False,
+                "message":
+                    "Duplicate application is not allowed."
+            }
+
+        # ----------------------------------------------------
+        # CREATE CANDIDATE
+        # ----------------------------------------------------
+
+        candidate = Candidate(
+
+            candidate_id=self.next_candidate_id,
+
+            name=name,
+
+            email=email,
+
+            phone=phone,
+
+            cgpa=float(cgpa),
+
+            branch=branch.upper(),
+
+            graduation_year=int(graduation_year),
+
+            skills=set(
+                skill.strip()
+                for skill in skills
+            ),
+
+            experience=int(experience)
+        )
+
+        self.candidates[
+            candidate.candidate_id
+        ] = candidate
+
+        self.application_keys.add(
+            duplicate_key
+        )
+
+        self.next_candidate_id += 1
+
+        # ----------------------------------------------------
+        # APPLICATION -> ELIGIBILITY
+        # ----------------------------------------------------
+
+        self.change_status(
+
+            candidate,
+
+            "Eligibility",
+
+            "Application submitted."
+        )
+
+        # ----------------------------------------------------
+        # RUN ELIGIBILITY
+        # ----------------------------------------------------
+
+        result = self.check_eligibility(
+            candidate,
+            job
+        )
+
+        return {
+            "success": True,
+            "candidate_id":
+                candidate.candidate_id,
+            "candidate":
+                candidate,
+            "result":
+                result
+        }
+
+    # ========================================================
+    # ELIGIBILITY ENGINE
+    # ========================================================
+
+    def check_eligibility(
+        self,
+        candidate,
+        job
+    ):
+
+        failed_rules = []
+
+        # ----------------------------------------------------
+        # CGPA RULE
+        # ----------------------------------------------------
+
+        if candidate.cgpa < job.min_cgpa:
+
+            failed_rules.append(
+                f"CGPA {candidate.cgpa} "
+                f"is below minimum "
+                f"{job.min_cgpa}"
+            )
+
+        # ----------------------------------------------------
+        # BRANCH RULE
+        # ----------------------------------------------------
+
+        if candidate.branch not in job.eligible_branches:
+
+            failed_rules.append(
+                "Branch is not eligible."
+            )
+
+        # ----------------------------------------------------
+        # GRADUATION YEAR RULE
+        # ----------------------------------------------------
+
+        if (
+            candidate.graduation_year
+            != job.graduation_year
+        ):
+
+            failed_rules.append(
+                "Graduation year is not eligible."
+            )
+
+        # ----------------------------------------------------
+        # SKILLS RULE
+        # ----------------------------------------------------
+
+        missing_skills = (
+            job.required_skills
+            - candidate.skills
+        )
+
+        if missing_skills:
+
+            failed_rules.append(
+                "Missing skills: "
+                + ", ".join(
+                    sorted(missing_skills)
+                )
+            )
+
+        # ----------------------------------------------------
+        # EXPERIENCE RULE
+        # ----------------------------------------------------
+
+        if (
+            candidate.experience
+            < job.min_experience
+        ):
+
+            failed_rules.append(
+                f"Experience must be at least "
+                f"{job.min_experience} years."
+            )
+
+        # ----------------------------------------------------
+        # REJECT
+        # ----------------------------------------------------
+
+        if failed_rules:
+
+            reason = "; ".join(
+                failed_rules
+            )
+
+            self.change_status(
+
+                candidate,
+
+                "Reject",
+
+                reason
+            )
+
+            return {
+                "eligible": False,
+                "message":
+                    "Candidate rejected.",
+                "reasons":
+                    failed_rules
+            }
+
+        # ----------------------------------------------------
+        # SHORTLIST
+        # ----------------------------------------------------
+
+        self.change_status(
+
+            candidate,
+
+            "Shortlist",
+
+            "All eligibility rules passed."
+        )
+
+        return {
+            "eligible": True,
+            "message":
+                "Candidate shortlisted.",
+            "reasons": []
+        }
+
+    # ========================================================
+    # RECRUITER ASSIGNMENT
+    # ========================================================
+
+    def assign_recruiter(
+        self,
+        candidate_id,
+        recruiter_name
+    ):
+
+        if candidate_id not in self.candidates:
+
+            return {
+                "success": False,
+                "message":
+                    "Candidate not found."
+            }
+
+        candidate = self.candidates[
+            candidate_id
+        ]
+
+        # ----------------------------------------------------
+        # ONLY SHORTLISTED CANDIDATES
+        # ----------------------------------------------------
+
+        if candidate.status != "Shortlist":
+
+            return {
+                "success": False,
+                "message":
+                    "Only shortlisted candidates "
+                    "can be assigned."
+            }
+
+        candidate.recruiter = recruiter_name
+
+        return {
+            "success": True,
+            "message":
+                f"Candidate assigned to "
+                f"{recruiter_name}."
+        }
+
+    # ========================================================
+    # ASSESSMENT
+    # ========================================================
+
+    def assessment(
+        self,
+        candidate_id,
+        passed
+    ):
+
+        if candidate_id not in self.candidates:
+
+            return "Candidate not found."
+
+        candidate = self.candidates[
+            candidate_id
+        ]
+
+        # ----------------------------------------------------
+        # PREVENT SKIPPING
+        # ----------------------------------------------------
+
+        if candidate.status != "Shortlist":
+
+            return (
+                "ERROR: Candidate cannot "
+                "skip workflow stages."
+            )
+
+        # ----------------------------------------------------
+        # PASS
+        # ----------------------------------------------------
+
+        if passed:
+
+            self.change_status(
+
+                candidate,
+
+                "Interview",
+
+                "Assessment passed."
+            )
+
+            return (
+                f"{candidate.name}: "
+                "Assessment PASSED -> Interview"
+            )
+
+        # ----------------------------------------------------
+        # FAIL
+        # ----------------------------------------------------
+
+        self.change_status(
+
+            candidate,
+
+            "Reject",
+
+            "Assessment failed."
+        )
+
+        return (
+            f"{candidate.name}: "
+            "Assessment FAILED -> Rejected"
+        )
+
+    # ========================================================
+    # INTERVIEW
+    # ========================================================
+
+    def interview(
+        self,
+        candidate_id,
+        passed
+    ):
+
+        if candidate_id not in self.candidates:
+
+            return "Candidate not found."
+
+        candidate = self.candidates[
+            candidate_id
+        ]
+
+        # ----------------------------------------------------
+        # PREVENT SKIPPING
+        # ----------------------------------------------------
+
+        if candidate.status != "Interview":
+
+            return (
+                "ERROR: Candidate is not "
+                "ready for interview."
+            )
+
+        # ----------------------------------------------------
+        # PASS
+        # ----------------------------------------------------
+
+        if passed:
+
+            self.change_status(
+
+                candidate,
+
+                "Selection",
+
+                "Interview passed."
+            )
+
+            return (
+                f"{candidate.name}: "
+                "Interview PASSED -> Selected"
+            )
+
+        # ----------------------------------------------------
+        # FAIL
+        # ----------------------------------------------------
+
+        self.change_status(
+
+            candidate,
+
+            "Reject",
+
+            "Interview failed."
+        )
+
+        return (
+            f"{candidate.name}: "
+            "Interview FAILED -> Rejected"
+        )
+
+    # ========================================================
+    # OFFER
+    # ========================================================
+
+    def generate_offer(
+        self,
+        candidate_id
+    ):
+
+        if candidate_id not in self.candidates:
+
+            return "Candidate not found."
+
+        candidate = self.candidates[
+            candidate_id
+        ]
+
+        # ----------------------------------------------------
+        # ONLY SELECTED CANDIDATES
+        # ----------------------------------------------------
+
+        if candidate.status != "Selection":
+
+            return (
+                "ERROR: Only selected candidates "
+                "can receive an offer."
+            )
+
+        self.change_status(
+
+            candidate,
+
+            "Offer",
+
+            "Offer generated automatically."
+        )
+
+        return (
+            f"{candidate.name}: "
+            "OFFER GENERATED"
+        )
+
+    # ========================================================
+    # REJECT CANDIDATE
+    # ========================================================
+
+    def reject_candidate(
+        self,
+        candidate_id,
+        reason
+    ):
+
+        if candidate_id not in self.candidates:
+
+            return "Candidate not found."
+
+        candidate = self.candidates[
+            candidate_id
+        ]
+
+        if candidate.status in [
+            "Offer",
+            "Reject"
+        ]:
+
+            return (
+                "Candidate is already in "
+                "final state."
+            )
+
+        self.change_status(
+
+            candidate,
+
+            "Reject",
+
+            reason
+        )
+
+        return (
+            f"{candidate.name}: REJECTED"
+        )
+
+    # ========================================================
+    # GET CANDIDATE
+    # ========================================================
+
+    def get_candidate(
+        self,
+        candidate_id
+    ):
+
+        return self.candidates.get(
+            candidate_id
+        )
+
+    # ========================================================
+    # SHOW ALL CANDIDATES
+    # ========================================================
+
+    def show_candidates(self):
+
+        print("\n")
+        print("=" * 90)
+        print("CANDIDATE LIST")
+        print("=" * 90)
+
+        print(
+            f"{'ID':<5}"
+            f"{'Name':<15}"
+            f"{'CGPA':<8}"
+            f"{'Branch':<12}"
+            f"{'Year':<8}"
+            f"{'Status':<15}"
+            f"{'Recruiter'}"
+        )
+
+        print("-" * 90)
+
+        for candidate in self.candidates.values():
+
+            print(
+                f"{candidate.candidate_id:<5}"
+                f"{candidate.name:<15}"
+                f"{candidate.cgpa:<8}"
+                f"{candidate.branch:<12}"
+                f"{candidate.graduation_year:<8}"
+                f"{candidate.status:<15}"
+                f"{candidate.recruiter or '-'}"
+            )
+
+    # ========================================================
+    # AUDIT HISTORY
+    # ========================================================
+
+    def show_history(
+        self,
+        candidate_id
+    ):
+
+        candidate = self.get_candidate(
+            candidate_id
+        )
+
+        if not candidate:
+
+            print("Candidate not found.")
+            return
+
+        print("\n")
+        print("=" * 70)
+        print(
+            f"AUDIT HISTORY: "
+            f"{candidate.name}"
+        )
+        print("=" * 70)
+
+        for record in candidate.history:
+
+            print(
+                f"{record['timestamp']} | "
+                f"{record['from']} -> "
+                f"{record['to']} | "
+                f"{record['reason']}"
+            )
+
+
+# ============================================================
+# DEMO
+# ============================================================
+
+def run_demo():
+
+    system = RecruitmentSystem()
+
+    # --------------------------------------------------------
+    # CONFIGURABLE JOB
+    # --------------------------------------------------------
+
+    job = system.create_job(
+
+        title="Python Developer",
+
+        min_cgpa=7.0,
+
+        branches={
+            "CSE",
+            "IT"
+        },
+
+        graduation_year=2026,
+
+        required_skills={
+            "Python",
+            "SQL"
+        },
+
+        min_experience=0
+    )
+
+    print("\n")
+    print("=" * 70)
+    print("INTELLIGENT CANDIDATE SELECTION SYSTEM")
+    print("=" * 70)
+
+    print(
+        f"\nJob: {job.title}"
+    )
+
+    print(
+        f"Minimum CGPA: "
+        f"{job.min_cgpa}"
+    )
+
+    print(
+        f"Branches: "
+        f"{', '.join(job.eligible_branches)}"
+    )
+
+    print(
+        f"Graduation Year: "
+        f"{job.graduation_year}"
+    )
+
+    print(
+        f"Required Skills: "
+        f"{', '.join(job.required_skills)}"
+    )
+
+    # ========================================================
+    # TEST CASE 1 - VALID
+    # ========================================================
+
+    print("\n\nTEST CASE 1")
+    print("-" * 50)
+
+    result1 = system.apply(
+
+        job.job_id,
+
+        "Himanshu",
+
+        "himanshu@gmail.com",
+
+        "9876543210",
+
+        8.5,
+
+        "CSE",
+
+        2026,
+
+        {
+            "Python",
+            "SQL",
+            "HTML",
+            "CSS"
+        },
+
+        0
+    )
+
+    print(result1["result"])
+
+    # Assign recruiter
+    print(
+        system.assign_recruiter(
+            result1["candidate_id"],
+            "Recruiter-A"
+        )
+    )
+
+    # Assessment
+    print(
+        system.assessment(
+            result1["candidate_id"],
+            True
+        )
+    )
+
+    # Interview
+    print(
+        system.interview(
+            result1["candidate_id"],
+            True
+        )
+    )
+
+    # Offer
+    print(
+        system.generate_offer(
+            result1["candidate_id"]
+        )
+    )
+
+    # ========================================================
+    # TEST CASE 2 - LOW CGPA
+    # ========================================================
+
+    print("\n\nTEST CASE 2")
+    print("-" * 50)
+
+    result2 = system.apply(
+
+        job.job_id,
+
+        "Aman",
+
+        "aman@gmail.com",
+
+        "9876543211",
+
+        6.2,
+
+        "CSE",
+
+        2026,
+
+        {
+            "Python",
+            "SQL"
+        },
+
+        0
+    )
+
+    print(result2["result"])
+
+    # ========================================================
+    # TEST CASE 3 - WRONG BRANCH
+    # ========================================================
+
+    print("\n\nTEST CASE 3")
+    print("-" * 50)
+
+    result3 = system.apply(
+
+        job.job_id,
+
+        "Rohit",
+
+        "rohit@gmail.com",
+
+        "9876543212",
+
+        8.1,
+
+        "Mechanical",
+
+        2026,
+
+        {
+            "Python",
+            "SQL"
+        },
+
+        0
+    )
+
+    print(result3["result"])
+
+    # ========================================================
+    # TEST CASE 4 - WRONG GRADUATION YEAR
+    # ========================================================
+
+    print("\n\nTEST CASE 4")
+    print("-" * 50)
+
+    result4 = system.apply(
+
+        job.job_id,
+
+        "Neha",
+
+        "neha@gmail.com",
+
+        "9876543213",
+
+        8.7,
+
+        "IT",
+
+        2025,
+
+        {
+            "Python",
+            "SQL"
+        },
+
+        0
+    )
+
+    print(result4["result"])
+
+    # ========================================================
+    # TEST CASE 5 - ASSESSMENT FAILURE
+    # ========================================================
+
+    print("\n\nTEST CASE 5")
+    print("-" * 50)
+
+    result5 = system.apply(
+
+        job.job_id,
+
+        "Priya",
+
+        "priya@gmail.com",
+
+        "9876543214",
+
+        8.0,
+
+        "IT",
+
+        2026,
+
+        {
+            "Python",
+            "SQL"
+        },
+
+        1
+    )
+
+    print(result5["result"])
+
+    print(
+        system.assign_recruiter(
+            result5["candidate_id"],
+            "Recruiter-B"
+        )
+    )
+
+    print(
+        system.assessment(
+            result5["candidate_id"],
+            False
+        )
+    )
+
+    # ========================================================
+    # DUPLICATE APPLICATION TEST
+    # ========================================================
+
+    print("\n\nDUPLICATE APPLICATION TEST")
+    print("-" * 50)
+
+    duplicate = system.apply(
+
+        job.job_id,
+
+        "Himanshu",
+
+        "himanshu@gmail.com",
+
+        "9876543210",
+
+        8.5,
+
+        "CSE",
+
+        2026,
+
+        {
+            "Python",
+            "SQL"
+        },
+
+        0
+    )
+
+    print(duplicate["message"])
+
+    # ========================================================
+    # WORKFLOW SKIP TEST
+    # ========================================================
+
+    print("\n\nWORKFLOW SKIP TEST")
+    print("-" * 50)
+
+    print(
+        system.generate_offer(
+            result2["candidate_id"]
+        )
+    )
+
+    # ========================================================
+    # SHOW ALL CANDIDATES
+    # ========================================================
+
+    system.show_candidates()
+
+    # ========================================================
+    # SHOW AUDIT HISTORY
+    # ========================================================
+
+    system.show_history(
+        result1["candidate_id"]
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+
+    try:
+
+        run_demo()
+
+    except Exception as error:
+
+        print("\nSYSTEM ERROR")
+        print("-" * 50)
+        print(
+            f"Error: {error}"
+        )
